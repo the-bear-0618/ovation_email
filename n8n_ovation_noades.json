@@ -1,0 +1,526 @@
+{
+  "name": "Great Harvest Crown Point - Daily Analytics Email",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 7
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 7AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SET timezone = 'America/Chicago';\n\n-- Query 1: Main Analytics Dashboard\nWITH date_ranges AS (\n    SELECT \n        CURRENT_DATE AT TIME ZONE 'America/Chicago' as today,\n        DATE_TRUNC('week', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date as week_start,\n        DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date as month_start,\n        DATE_TRUNC('year', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date as year_start,\n        (CURRENT_DATE AT TIME ZONE 'America/Chicago') - INTERVAL '1 day' as yesterday\n),\nrating_metrics AS (\n    SELECT\n        COUNT(CASE WHEN DATE(created_at AT TIME ZONE 'America/Chicago') = (SELECT today FROM date_ranges) THEN 1 END) as surveys_today,\n        AVG(CASE WHEN DATE(created_at AT TIME ZONE 'America/Chicago') = (SELECT today FROM date_ranges) THEN rating END) as avg_rating_today,\n        COUNT(CASE WHEN DATE(created_at AT TIME ZONE 'America/Chicago') = (SELECT today FROM date_ranges) AND rating <= 2 THEN 1 END) as negative_today,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT week_start FROM date_ranges) THEN 1 END) as surveys_wtd,\n        AVG(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT week_start FROM date_ranges) THEN rating END) as avg_rating_wtd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT week_start FROM date_ranges) AND rating >= 4 THEN 1 END) as positive_wtd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT month_start FROM date_ranges) THEN 1 END) as surveys_mtd,\n        AVG(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT month_start FROM date_ranges) THEN rating END) as avg_rating_mtd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT month_start FROM date_ranges) AND rating >= 4 THEN 1 END) as positive_mtd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT year_start FROM date_ranges) THEN 1 END) as surveys_ytd,\n        AVG(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT year_start FROM date_ranges) THEN rating END) as avg_rating_ytd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT year_start FROM date_ranges) AND rating >= 4 THEN 1 END) as positive_ytd,\n        AVG(CASE WHEN DATE(created_at AT TIME ZONE 'America/Chicago') = (SELECT yesterday FROM date_ranges) THEN rating END) as avg_rating_yesterday,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT week_start FROM date_ranges) AND rating <= 2 AND has_response = true THEN 1 END) as negative_responded_wtd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT week_start FROM date_ranges) AND rating <= 2 THEN 1 END) as negative_total_wtd\n    FROM surveys\n    WHERE rating IS NOT NULL\n)\nSELECT \n    surveys_today,\n    ROUND(avg_rating_today::numeric, 2) as avg_rating_today,\n    negative_today,\n    surveys_wtd,\n    ROUND(avg_rating_wtd::numeric, 2) as avg_rating_wtd,\n    ROUND(100.0 * positive_wtd / NULLIF(surveys_wtd, 0), 1) as positive_pct_wtd,\n    surveys_mtd,\n    ROUND(avg_rating_mtd::numeric, 2) as avg_rating_mtd,\n    ROUND(100.0 * positive_mtd / NULLIF(surveys_mtd, 0), 1) as positive_pct_mtd,\n    surveys_ytd,\n    ROUND(avg_rating_ytd::numeric, 2) as avg_rating_ytd,\n    ROUND(100.0 * positive_ytd / NULLIF(surveys_ytd, 0), 1) as positive_pct_ytd,\n    ROUND(avg_rating_yesterday::numeric, 2) as avg_rating_yesterday,\n    ROUND(100.0 * negative_responded_wtd / NULLIF(negative_total_wtd, 0), 1) as negative_response_rate\nFROM rating_metrics;",
+        "options": {}
+      },
+      "id": "postgres-summary",
+      "name": "Query1_Summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [450, 100],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Query 2: Top Keywords (Positive)\nWITH positive_feedback AS (\n    SELECT \n        LOWER(s.feedback) as feedback,\n        CASE \n            WHEN (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('week', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date THEN 'This Week'\n            WHEN (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date THEN 'This Month'\n        END as period\n    FROM surveys s\n    WHERE s.rating >= 4 \n    AND s.feedback IS NOT NULL \n    AND LENGTH(s.feedback) > 10\n    AND (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date\n),\nword_counts AS (\n    SELECT \n        period,\n        TRIM(UNNEST(STRING_TO_ARRAY(\n            REGEXP_REPLACE(feedback, '[^a-zA-Z\\s]', ' ', 'g'), ' '\n        ))) as word\n    FROM positive_feedback\n    WHERE period IS NOT NULL\n),\nfiltered_words AS (\n    SELECT period, word\n    FROM word_counts\n    WHERE LENGTH(word) > 3\n    AND word NOT IN ('the', 'and', 'was', 'that', 'this', 'with', 'have', 'from', 'were', 'they', 'been', 'their', 'what', 'when', 'your', 'said', 'each', 'which', 'them', 'than', 'many', 'some', 'time', 'very', 'about', 'other', 'into', 'more', 'these', 'would', 'there', 'make', 'just', 'over', 'also', 'back', 'after', 'only', 'year', 'work', 'three', 'being', 'never', 'those', 'both', 'great', 'good', 'food', 'place', 'nice', 'love', 'really', 'always', 'best', 'like')\n)\nSELECT \n    period,\n    word as keyword,\n    COUNT(*) as frequency\nFROM filtered_words\nGROUP BY period, word\nHAVING COUNT(*) > 1\nORDER BY period, frequency DESC\nLIMIT 30;",
+        "options": {}
+      },
+      "id": "postgres-keywords-positive",
+      "name": "Query2_Keywords_Positive",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [450, 200],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Query 3: Top Keywords (Negative)\nWITH negative_feedback AS (\n    SELECT \n        LOWER(s.feedback) as feedback,\n        CASE \n            WHEN (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('week', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date THEN 'This Week'\n            WHEN (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date THEN 'This Month'\n        END as period\n    FROM surveys s\n    WHERE s.rating <= 2\n    AND s.feedback IS NOT NULL \n    AND LENGTH(s.feedback) > 10\n    AND (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date\n),\nword_counts AS (\n    SELECT \n        period,\n        TRIM(UNNEST(STRING_TO_ARRAY(\n            REGEXP_REPLACE(feedback, '[^a-zA-Z\\s]', ' ', 'g'), ' '\n        ))) as word\n    FROM negative_feedback\n    WHERE period IS NOT NULL\n),\nfiltered_words AS (\n    SELECT period, word\n    FROM word_counts\n    WHERE LENGTH(word) > 3\n    AND word NOT IN ('the', 'and', 'was', 'that', 'this', 'with', 'have', 'from', 'were', 'they', 'been', 'their', 'what', 'when', 'your', 'said', 'each', 'which', 'them', 'than', 'many', 'some', 'time', 'very', 'about', 'other', 'into', 'more', 'these', 'would', 'there', 'make', 'just', 'over', 'also', 'back', 'after', 'only', 'year', 'work', 'three', 'being', 'never', 'those', 'both', 'didnt', 'dont', 'wasnt', 'werent', 'couldnt', 'wouldnt')\n)\nSELECT \n    period,\n    word as keyword,\n    COUNT(*) as frequency\nFROM filtered_words\nGROUP BY period, word\nHAVING COUNT(*) > 1\nORDER BY period, frequency DESC\nLIMIT 30;",
+        "options": {}
+      },
+      "id": "postgres-keywords-negative",
+      "name": "Query3_Keywords_Negative",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [450, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Query 4: Location Performance\nWITH location_metrics AS (\n    SELECT \n        l.id,\n        l.name as location_name,\n        l.city,\n        l.state,\n        COUNT(s.id) as total_surveys,\n        AVG(s.rating) as avg_rating,\n        COUNT(s.id) FILTER (WHERE s.rating <= 2) as negative_count,\n        COUNT(s.id) FILTER (WHERE s.is_negative = true AND s.has_response = true) as negative_responded\n    FROM locations l\n    LEFT JOIN surveys s ON l.id = s.location_id \n        AND (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date\n    WHERE l.disabled = false\n    GROUP BY l.id, l.name, l.city, l.state\n)\nSELECT \n    location_name,\n    city || ', ' || state as location,\n    total_surveys,\n    ROUND(avg_rating::numeric, 2) as avg_rating,\n    ROUND(100.0 * negative_responded / NULLIF(negative_count, 0), 1) as negative_response_rate\nFROM location_metrics\nWHERE total_surveys > 0\nORDER BY avg_rating DESC NULLS LAST;",
+        "options": {}
+      },
+      "id": "postgres-locations",
+      "name": "Query4_Locations",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [450, 400],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Query 5: Recent Negative Feedback\nSELECT \n    l.name as location_name,\n    c.name as customer_name,\n    c.email as customer_email,\n    c.phone as customer_phone,\n    s.rating,\n    s.feedback,\n    s.response_message,\n    s.response_by,\n    s.has_response,\n    DATE_PART('day', (CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago') - (s.created_at AT TIME ZONE 'America/Chicago')) as days_ago,\n    co.total as order_total,\n    co.type as order_type\nFROM surveys s\nLEFT JOIN locations l ON s.location_id = l.id\nLEFT JOIN customers c ON s.customer_id = c.id\nLEFT JOIN customer_orders co ON co.customer_id = s.customer_id \n    AND DATE(co.order_placed_date AT TIME ZONE 'America/Chicago') = DATE(s.created_at AT TIME ZONE 'America/Chicago')\nWHERE s.rating <= 2\nAND (s.created_at AT TIME ZONE 'America/Chicago')::date >= (CURRENT_DATE AT TIME ZONE 'America/Chicago') - INTERVAL '7 days'\nAND s.feedback IS NOT NULL\nORDER BY s.created_at DESC\nLIMIT 10;",
+        "options": {}
+      },
+      "id": "postgres-negative",
+      "name": "Query5_Negative",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [450, 500],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Query 6: Team Performance\nSELECT \n    COALESCE(s.response_by, 'Unassigned') as responder,\n    COUNT(*) as responses_handled,\n    AVG(s.response_time) as avg_response_time_minutes,\n    COUNT(*) FILTER (WHERE s.response_time <= 60) as responses_under_1hr,\n    ROUND(AVG(s.rating) FILTER (WHERE s.has_response = true)::numeric, 2) as avg_rating_after_response\nFROM surveys s\nWHERE s.has_response = true\nAND (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date\nGROUP BY s.response_by\nORDER BY responses_handled DESC;",
+        "options": {}
+      },
+      "id": "postgres-team",
+      "name": "Query6_Team",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [650, 100],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Query 7: Daily Trends\nSELECT \n    DATE(s.created_at AT TIME ZONE 'America/Chicago') as date,\n    COUNT(*) as daily_surveys,\n    ROUND(AVG(s.rating)::numeric, 2) as daily_avg\nFROM surveys s\nWHERE s.rating IS NOT NULL\nAND (s.created_at AT TIME ZONE 'America/Chicago')::date >= (CURRENT_DATE AT TIME ZONE 'America/Chicago') - INTERVAL '30 days'\nGROUP BY DATE(s.created_at AT TIME ZONE 'America/Chicago')\nORDER BY date DESC\nLIMIT 30;",
+        "options": {}
+      },
+      "id": "postgres-trends",
+      "name": "Query7_Trends",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [650, 200],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Query 8: Executive Summary\nWITH metrics AS (\n    SELECT\n        COUNT(*) FILTER (WHERE (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date) as surveys_this_month,\n        AVG(s.rating) FILTER (WHERE (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date) as avg_rating_month,\n        COUNT(*) FILTER (WHERE s.rating >= 4 AND (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date) as promoters,\n        COUNT(*) FILTER (WHERE s.rating <= 2 AND (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date) as detractors,\n        AVG(s.rating) FILTER (WHERE (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', (CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago') - INTERVAL '1 month')::date \n                              AND (s.created_at AT TIME ZONE 'America/Chicago')::date < DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date) as avg_rating_last_month,\n        COUNT(DISTINCT s.location_id) FILTER (WHERE (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date) as active_locations,\n        COUNT(DISTINCT s.customer_id) FILTER (WHERE (s.created_at AT TIME ZONE 'America/Chicago')::date >= DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date) as unique_customers\n    FROM surveys s\n    WHERE s.rating IS NOT NULL\n)\nSELECT \n    surveys_this_month,\n    ROUND(avg_rating_month::numeric, 2) as avg_rating,\n    ROUND(100.0 * promoters / NULLIF(surveys_this_month, 0), 1) as promoter_percentage,\n    ROUND(100.0 * detractors / NULLIF(surveys_this_month, 0), 1) as detractor_percentage,\n    ROUND(100.0 * (promoters - detractors) / NULLIF(surveys_this_month, 0), 1) as nps_score,\n    ROUND((avg_rating_month - avg_rating_last_month)::numeric, 2) as mom_change,\n    CASE \n        WHEN avg_rating_month > avg_rating_last_month THEN '📈 Improving'\n        WHEN avg_rating_month < avg_rating_last_month THEN '📉 Declining'\n        ELSE '➡️ Stable'\n    END as trend,\n    active_locations,\n    unique_customers\nFROM metrics;",
+        "options": {}
+      },
+      "id": "postgres-executive",
+      "name": "Query8_Executive",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [650, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Query 10: Hourly Pattern\nWITH hourly_stats AS (\n    SELECT \n        EXTRACT(HOUR FROM s.created_at AT TIME ZONE 'America/Chicago') as hour_of_day,\n        COUNT(*) as survey_count,\n        AVG(s.rating) as avg_rating\n    FROM surveys s\n    WHERE (s.created_at AT TIME ZONE 'America/Chicago')::date >= (CURRENT_DATE AT TIME ZONE 'America/Chicago') - INTERVAL '30 days'\n    GROUP BY EXTRACT(HOUR FROM s.created_at AT TIME ZONE 'America/Chicago')\n)\nSELECT \n    CASE \n        WHEN hour_of_day = 0 THEN '12 AM'\n        WHEN hour_of_day < 12 THEN hour_of_day || ' AM'\n        WHEN hour_of_day = 12 THEN '12 PM'\n        ELSE (hour_of_day - 12) || ' PM'\n    END as time_of_day,\n    survey_count,\n    ROUND(avg_rating::numeric, 2) as avg_rating\nFROM hourly_stats\nORDER BY hour_of_day;",
+        "options": {}
+      },
+      "id": "postgres-hourly",
+      "name": "Query10_Hourly",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [650, 400],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Query 11: Weekly Performance\nWITH weekly_metrics AS (\n    SELECT \n        DATE_TRUNC('week', s.created_at AT TIME ZONE 'America/Chicago')::date as week_start,\n        TO_CHAR(DATE_TRUNC('week', s.created_at AT TIME ZONE 'America/Chicago')::date, 'Mon DD') || ' - ' || \n        TO_CHAR((DATE_TRUNC('week', s.created_at AT TIME ZONE 'America/Chicago') + INTERVAL '6 days')::date, 'Mon DD') as week_label,\n        COUNT(*) as total_surveys,\n        AVG(s.rating) as avg_rating,\n        COUNT(*) FILTER (WHERE s.rating >= 4) as promoters,\n        COUNT(*) FILTER (WHERE s.rating <= 2) as detractors,\n        COUNT(*) FILTER (WHERE s.has_response = true) as responses_sent\n    FROM surveys s\n    WHERE (s.created_at AT TIME ZONE 'America/Chicago')::date >= \n          DATE_TRUNC('week', (CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago') - INTERVAL '8 weeks')::date\n    GROUP BY DATE_TRUNC('week', s.created_at AT TIME ZONE 'America/Chicago')::date\n)\nSELECT \n    week_label,\n    total_surveys,\n    ROUND(avg_rating::numeric, 2) as avg_rating,\n    ROUND(100.0 * (promoters - detractors) / NULLIF(total_surveys, 0), 1) as weekly_nps,\n    ROUND(100.0 * responses_sent / NULLIF(total_surveys, 0), 1) as response_rate,\n    ROUND((avg_rating - LAG(avg_rating) OVER (ORDER BY week_start))::numeric, 2) as wow_rating_change\nFROM weekly_metrics\nORDER BY week_start DESC\nLIMIT 8;",
+        "options": {}
+      },
+      "id": "postgres-weekly",
+      "name": "Query11_Weekly",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [650, 500],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Query 12: Day of Week Performance\nWITH day_stats AS (\n    SELECT \n        TO_CHAR(s.created_at AT TIME ZONE 'America/Chicago', 'Dy') as day_name,\n        EXTRACT(DOW FROM s.created_at AT TIME ZONE 'America/Chicago') as day_number,\n        COUNT(*) as survey_count,\n        AVG(s.rating) as avg_rating\n    FROM surveys s\n    WHERE (s.created_at AT TIME ZONE 'America/Chicago')::date >= (CURRENT_DATE AT TIME ZONE 'America/Chicago') - INTERVAL '30 days'\n    GROUP BY TO_CHAR(s.created_at AT TIME ZONE 'America/Chicago', 'Dy'), \n             EXTRACT(DOW FROM s.created_at AT TIME ZONE 'America/Chicago')\n)\nSELECT \n    CASE day_number\n        WHEN 0 THEN 'Sunday'\n        WHEN 1 THEN 'Monday'\n        WHEN 2 THEN 'Tuesday'\n        WHEN 3 THEN 'Wednesday'\n        WHEN 4 THEN 'Thursday'\n        WHEN 5 THEN 'Friday'\n        WHEN 6 THEN 'Saturday'\n    END as day_of_week,\n    survey_count,\n    ROUND(avg_rating::numeric, 2) as avg_rating\nFROM day_stats\nORDER BY \n    CASE day_number\n        WHEN 1 THEN 1\n        WHEN 2 THEN 2\n        WHEN 3 THEN 3\n        WHEN 4 THEN 4\n        WHEN 5 THEN 5\n        WHEN 6 THEN 6\n        WHEN 0 THEN 7\n    END;",
+        "options": {}
+      },
+      "id": "postgres-dayofweek",
+      "name": "Query12_DayOfWeek",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [850, 100],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Function Node Code - Complete Great Harvest Crown Point Analytics Email\n// Corporate Colors: Main #0c2340, Highlight #d84127\n\n// Get all query results from previous Postgres nodes\nconst summaryData = $node[\"Query1_Summary\"].json[0];\nconst keywordsPositive = $node[\"Query2_Keywords_Positive\"].json;\nconst keywordsNegative = $node[\"Query3_Keywords_Negative\"].json;\nconst locationData = $node[\"Query4_Locations\"].json;\nconst negativeData = $node[\"Query5_Negative\"].json;\nconst teamData = $node[\"Query6_Team\"].json;\nconst trendData = $node[\"Query7_Trends\"].json;\nconst executiveData = $node[\"Query8_Executive\"].json[0];\nconst hourlyData = $node[\"Query10_Hourly\"].json;\nconst weeklyData = $node[\"Query11_Weekly\"].json;\nconst dayOfWeekData = $node[\"Query12_DayOfWeek\"].json;\n\n// Helper functions\nconst formatNumber = (value) => parseInt(value || 0).toLocaleString('en-US');\nconst formatPercent = (value) => parseFloat(value || 0).toFixed(1) + '%';\nconst formatRating = (value) => parseFloat(value || 0).toFixed(1);\nconst formatCurrency = (value) => '$' + parseFloat(value || 0).toFixed(2);\n\n// Generate star rating display\nconst starRating = (rating) => {\n  const full = '★';\n  const empty = '☆';\n  const ratingNum = parseFloat(rating || 0);\n  let stars = '';\n  for (let i = 1; i <= 5; i++) {\n    stars += i <= ratingNum ? full : empty;\n  }\n  return stars;\n};\n\n// Generate visual rating bar with percentage\nconst ratingBar = (rating, showLabel = true) => {\n  const percentage = (rating / 5) * 100;\n  const color = rating >= 4 ? '#27ae60' : rating >= 3 ? '#f39c12' : '#d84127';\n  return `\n    <div style=\"display: flex; align-items: center; gap: 10px;\">\n      <div style=\"background: #e0e0e0; height: 10px; border-radius: 5px; flex: 1; position: relative;\">\n        <div style=\"background: ${color}; width: ${percentage}%; height: 100%; border-radius: 5px;\"></div>\n      </div>\n      ${showLabel ? `<span style=\"font-size: 14px; font-weight: bold; min-width: 35px;\">${formatRating(rating)}</span>` : ''}\n    </div>\n  `;\n};\n\n// Generate trend indicator\nconst trendIndicator = (current, previous) => {\n  if (!previous || !current) return '';\n  const diff = current - previous;\n  const percent = ((diff / previous) * 100).toFixed(1);\n  if (Math.abs(diff) < 0.01) return '<span style=\"color: #666;\">→ 0%</span>';\n  return diff > 0 \n    ? `<span style=\"color: #27ae60;\">↑ ${percent}%</span>`\n    : `<span style=\"color: #d84127;\">↓ ${percent}%</span>`;\n};\n\n// Generate keyword cloud HTML\nconst keywordCloud = (keywords, color) => {\n  if (!keywords || keywords.length === 0) return '<p style=\"color: #666;\">No significant keywords found</p>';\n  \n  return keywords.slice(0, 15).map(kw => {\n    const size = Math.max(14, Math.min(24, 14 + (kw.frequency * 2)));\n    const opacity = Math.max(0.6, Math.min(1, 0.6 + (kw.frequency * 0.05)));\n    return `<span style=\"\n      display: inline-block;\n      padding: 4px 8px;\n      margin: 4px;\n      font-size: ${size}px;\n      color: ${color};\n      opacity: ${opacity};\n      border: 1px solid ${color};\n      border-radius: 4px;\n    \">${kw.keyword} (${kw.frequency})</span>`;\n  }).join('');\n};\n\n// Generate hourly heat map\nconst hourlyHeatMap = (data) => {\n  if (!data || data.length === 0) return '';\n  \n  const maxSurveys = Math.max(...data.map(h => h.survey_count));\n  \n  return data.map(hour => {\n    const intensity = hour.survey_count / maxSurveys;\n    const bgColor = hour.avg_rating >= 4 ? `rgba(39, 174, 96, ${intensity})` : \n                    hour.avg_rating >= 3 ? `rgba(243, 156, 18, ${intensity})` :\n                    `rgba(216, 65, 39, ${intensity})`;\n    \n    return `\n      <div style=\"\n        display: inline-block;\n        width: 40px;\n        height: 40px;\n        margin: 2px;\n        background: ${bgColor};\n        border: 1px solid #ddd;\n        border-radius: 4px;\n        text-align: center;\n        line-height: 40px;\n        font-size: 11px;\n        font-weight: bold;\n        position: relative;\n        cursor: default;\n      \" title=\"${hour.time_of_day}: ${hour.survey_count} surveys, ${formatRating(hour.avg_rating)}★\">\n        ${hour.time_of_day.replace(/ (AM|PM)/, '')}\n      </div>\n    `;\n  }).join('');\n};\n\n// Check for alerts based on dynamic thresholds\nconst alerts = [];\nconst criticalRating = 3.8; // These would come from your threshold query\nconst warningNegativeDaily = 5;\nconst criticalNegativeDaily = 10;\nconst minResponseRate = 80;\n\nif (summaryData.avg_rating_today && summaryData.avg_rating_today < criticalRating) {\n  alerts.push({\n    type: 'critical',\n    icon: '🚨',\n    message: `Today's average rating (${formatRating(summaryData.avg_rating_today)}) is below critical threshold (${criticalRating})`\n  });\n}\n\nif (summaryData.negative_today > criticalNegativeDaily) {\n  alerts.push({\n    type: 'critical',\n    icon: '⚠️',\n    message: `High volume of negative feedback today: ${summaryData.negative_today} negative reviews`\n  });\n}\n\nconst responseRate = parseFloat(summaryData.negative_response_rate || 100);\nif (responseRate < minResponseRate) {\n  alerts.push({\n    type: 'warning',\n    icon: '📢',\n    message: `Response rate to negative feedback (${formatPercent(responseRate)}) is below target (${minResponseRate}%)`\n  });\n}\n\n// Count unresponded negative feedback from last 48 hours\nconst unrespondedCount = negativeData.filter(f => !f.has_response && f.days_ago <= 2).length;\nif (unrespondedCount > 0) {\n  alerts.push({\n    type: 'warning',\n    icon: '💬',\n    message: `${unrespondedCount} negative feedback items need responses (< 48 hours old)`\n  });\n}\n\n// Generate alert section HTML\nlet alertSection = '';\nif (alerts.length > 0) {\n  const criticalAlerts = alerts.filter(a => a.type === 'critical');\n  const warningAlerts = alerts.filter(a => a.type === 'warning');\n  \n  alertSection = `\n    <div style=\"padding: 20px;\">\n      ${criticalAlerts.length > 0 ? `\n        <div style=\"background-color: #d84127; color: white; padding: 15px; margin-bottom: 15px; border-radius: 8px;\">\n          <h3 style=\"margin: 0 0 10px 0; font-size: 18px;\">🚨 CRITICAL ALERTS</h3>\n          ${criticalAlerts.map(a => `<p style=\"margin: 5px 0; font-size: 14px;\">${a.icon} ${a.message}</p>`).join('')}\n        </div>\n      ` : ''}\n      ${warningAlerts.length > 0 ? `\n        <div style=\"background-color: #f39c12; color: white; padding: 15px; border-radius: 8px;\">\n          <h3 style=\"margin: 0 0 10px 0; font-size: 18px;\">⚠️ WARNINGS</h3>\n          ${warningAlerts.map(a => `<p style=\"margin: 5px 0; font-size: 14px;\">${a.icon} ${a.message}</p>`).join('')}\n        </div>\n      ` : ''}\n    </div>\n  `;\n}\n\n// Generate location performance rows\nlet locationTableHTML = '';\nlocationData.forEach((loc, index) => {\n  const ratingColor = loc.avg_rating >= 4 ? '#27ae60' : loc.avg_rating >= 3.5 ? '#f39c12' : '#d84127';\n  const rowBg = index % 2 === 0 ? '#ffffff' : '#f8f9fa';\n  \n  locationTableHTML += `\n    <tr style=\"background: ${rowBg};\">\n      <td style=\"padding: 12px; border-bottom: 1px solid #e0e0e0;\">\n        <strong>${loc.location_name}</strong><br>\n        <span style=\"font-size: 12px; color: #666;\">${loc.location}</span>\n      </td>\n      <td style=\"padding: 12px; text-align: center; border-bottom: 1px solid #e0e0e0;\">\n        ${loc.total_surveys}\n      </td>\n      <td style=\"padding: 12px; border-bottom: 1px solid #e0e0e0;\">\n        <div style=\"display: flex; align-items: center; gap: 8px;\">\n          <span style=\"color: ${ratingColor}; font-weight: bold;\">${formatRating(loc.avg_rating)}</span>\n          <span style=\"color: ${ratingColor};\">${starRating(loc.avg_rating)}</span>\n        </div>\n      </td>\n      <td style=\"padding: 12px; text-align: center; border-bottom: 1px solid #e0e0e0;\">\n        <span style=\"color: ${loc.negative_response_rate >= 80 ? '#27ae60' : '#d84127'};\">\n          ${formatPercent(loc.negative_response_rate)}\n        </span>\n      </td>\n    </tr>\n  `;\n});\n\n// Generate team performance rows\nlet teamTableHTML = '';\nteamData.forEach((member, index) => {\n  const avgTime = parseInt(member.avg_response_time_minutes || 0);\n  const timeColor = avgTime <= 60 ? '#27ae60' : avgTime <= 120 ? '#f39c12' : '#d84127';\n  const rowBg = index % 2 === 0 ? '#ffffff' : '#f8f9fa';\n  \n  teamTableHTML += `\n    <tr style=\"background: ${rowBg};\">\n      <td style=\"padding: 12px; border-bottom: 1px solid #e0e0e0;\">\n        <strong>${member.responder}</strong>\n      </td>\n      <td style=\"padding: 12px; text-align: center; border-bottom: 1px solid #e0e0e0;\">\n        ${member.responses_handled}\n      </td>\n      <td style=\"padding: 12px; text-align: center; border-bottom: 1px solid #e0e0e0;\">\n        <span style=\"color: ${timeColor}; font-weight: bold;\">\n          ${avgTime} min\n        </span>\n      </td>\n      <td style=\"padding: 12px; text-align: center; border-bottom: 1px solid #e0e0e0;\">\n        ${member.responses_under_1hr}\n        <span style=\"color: #666; font-size: 12px;\">\n          (${Math.round((member.responses_under_1hr / member.responses_handled) * 100)}%)\n        </span>\n      </td>\n      <td style=\"padding: 12px; text-align: center; border-bottom: 1px solid #e0e0e0;\">\n        ${formatRating(member.avg_rating_after_response)} ⭐\n      </td>\n    </tr>\n  `;\n});\n\n// Generate recent negative feedback items\nlet negativeFeedbackHTML = '';\nnegativeData.slice(0, 5).forEach(feedback => {\n  const urgencyColor = feedback.days_ago === 0 ? '#d84127' : feedback.days_ago === 1 ? '#f39c12' : '#666';\n  const responseStatus = feedback.has_response \n    ? `<span style=\"color: #27ae60;\">✓ Responded by ${feedback.response_by || 'Team'}</span>` \n    : `<span style=\"color: #d84127; font-weight: bold;\">⚠️ NEEDS RESPONSE</span>`;\n  \n  negativeFeedbackHTML += `\n    <div style=\"background: #f8f9fa; padding: 15px; margin-bottom: 12px; border-radius: 8px; border-left: 4px solid ${urgencyColor};\">\n      <div style=\"display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;\">\n        <div>\n          <strong style=\"font-size: 16px;\">${feedback.customer_name || 'Anonymous Customer'}</strong>\n          ${feedback.customer_email ? `<br><span style=\"font-size: 12px; color: #666;\">📧 ${feedback.customer_email}</span>` : ''}\n          ${feedback.customer_phone ? `<br><span style=\"font-size: 12px; color: #666;\">📱 ${feedback.customer_phone}</span>` : ''}\n        </div>\n        <div style=\"text-align: right;\">\n          <span style=\"color: ${urgencyColor}; font-weight: bold; font-size: 14px;\">\n            ${feedback.days_ago === 0 ? 'TODAY' : feedback.days_ago === 1 ? 'YESTERDAY' : feedback.days_ago + ' days ago'}\n          </span>\n          <br>\n          <span style=\"font-size: 12px; color: #666;\">${feedback.location_name}</span>\n        </div>\n      </div>\n      \n      <div style=\"background: white; padding: 10px; border-radius: 4px; margin: 10px 0;\">\n        <p style=\"margin: 0; color: #333; font-style: italic; line-height: 1.4;\">\n          \"${feedback.feedback}\"\n        </p>\n      </div>\n      \n      <div style=\"display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;\">\n        <div>\n          <span style=\"font-size: 24px; color: #d84127;\">${starRating(feedback.rating)}</span>\n          <span style=\"font-size: 14px; color: #666; margin-left: 10px;\">\n            Rating: ${feedback.rating}/5\n          </span>\n        </div>\n        ${responseStatus}\n      </div>\n      \n      ${feedback.order_total ? `\n        <div style=\"margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd;\">\n          <span style=\"font-size: 12px; color: #666;\">\n            🛒 Order: ${formatCurrency(feedback.order_total)} (${feedback.order_type || 'Unknown'})\n          </span>\n        </div>\n      ` : ''}\n    </div>\n  `;\n});\n\n// Generate day of week performance chart\nconst dayOfWeekChart = () => {\n  if (!dayOfWeekData || dayOfWeekData.length === 0) return '';\n  \n  const maxCount = Math.max(...dayOfWeekData.map(d => d.survey_count));\n  \n  return dayOfWeekData.map(day => {\n    const heightPercent = (day.survey_count / maxCount) * 100;\n    const color = day.avg_rating >= 4 ? '#27ae60' : day.avg_rating >= 3 ? '#f39c12' : '#d84127';\n    \n    return `\n      <div style=\"flex: 1; text-align: center; margin: 0 4px;\">\n        <div style=\"height: 120px; display: flex; flex-direction: column; justify-content: flex-end;\">\n          <div style=\"background: ${color}; width: 100%; height: ${heightPercent}%; min-height: 20px; border-radius: 4px 4px 0 0; position: relative;\">\n            <span style=\"position: absolute; top: -25px; left: 50%; transform: translateX(-50%); font-size: 12px; font-weight: bold; white-space: nowrap;\">\n              ${formatRating(day.avg_rating)}★\n            </span>\n            <span style=\"position: absolute; bottom: -20px; left: 50%; transform: translateX(-50%); font-size: 11px; color: #666;\">\n              ${day.survey_count}\n            </span>\n          </div>\n        </div>\n        <div style=\"font-size: 12px; margin-top: 25px; font-weight: bold; color: #0c2340;\">\n          ${day.day_of_week.substring(0, 3)}\n        </div>\n      </div>\n    `;\n  }).join('');\n};\n\n// Generate complete email HTML\nconst emailHTML = `<!DOCTYPE html>\n<html>\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <style>\n        @media only screen and (max-width: 600px) {\n            .hide-mobile { display: none !important; }\n            .stack-mobile { display: block !important; width: 100% !important; }\n            .center-mobile { text-align: center !important; }\n            .padding-mobile { padding: 10px !important; }\n            .full-width-mobile { width: 100% !important; }\n            .small-font-mobile { font-size: 12px !important; }\n            h1 { font-size: 24px !important; }\n            h2 { font-size: 20px !important; }\n            h3 { font-size: 18px !important; }\n            table { font-size: 14px !important; }\n        }\n    </style>\n</head>\n<body style=\"margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background-color: #f5f5f5;\">\n    <div style=\"max-width: 700px; margin: 0 auto; background-color: #ffffff;\">\n        \n        <!-- Header -->\n        <div style=\"background: linear-gradient(135deg, #0c2340 0%, #1a3a5c 100%); color: #ffffff; padding: 30px 20px; text-align: center;\">\n            <h1 style=\"margin: 0; font-size: 32px; font-weight: 600;\">Great Harvest Crown Point</h1>\n            <h2 style=\"margin: 10px 0 0 0; font-size: 22px; font-weight: 300;\">Daily Customer Feedback Analytics</h2>\n            <p style=\"margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;\">\n              ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}\n            </p>\n        </div>\n        \n        ${alertSection}\n        \n        <!-- Executive Summary -->\n        <div style=\"padding: 30px 20px;\" class=\"padding-mobile\">\n            \n            <!-- NPS Score Card -->\n            <div style=\"background: linear-gradient(135deg, #0c2340 0%, #1a3a5c 100%); color: white; padding: 30px; border-radius: 12px; margin-bottom: 25px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n                <h3 style=\"margin: 0; font-size: 18px; font-weight: 300; text-transform: uppercase; letter-spacing: 2px;\">Net Promoter Score</h3>\n                <div style=\"font-size: 64px; font-weight: bold; margin: 15px 0; line-height: 1;\">\n                    ${executiveData.nps_score || summaryData.nps_score || '0'}\n                </div>\n                <div style=\"display: flex; justify-content: center; gap: 30px; margin-top: 20px;\">\n                    <div>\n                        <div style=\"font-size: 24px; font-weight: bold; color: #4cd137;\">${executiveData.promoter_percentage || '0'}%</div>\n                        <div style=\"font-size: 12px; opacity: 0.8;\">Promoters</div>\n                    </div>\n                    <div>\n                        <div style=\"font-size: 24px; font-weight: bold; color: #d84127;\">${executiveData.detractor_percentage || '0'}%</div>\n                        <div style=\"font-size: 12px; opacity: 0.8;\">Detractors</div>\n                    </div>\n                </div>\n                <p style=\"margin: 20px 0 0 0; font-size: 16px; opacity: 0.9;\">\n                    ${executiveData.trend} | ${executiveData.mom_change > 0 ? '+' : ''}${executiveData.mom_change || '0'} points from last month\n                </p>\n            </div>\n            \n            <!-- Period Performance Grid -->\n            <h2 style=\"color: #0c2340; font-size: 24px; margin: 30px 0 20px 0; border-bottom: 2px solid #0c2340; padding-bottom: 10px;\">\n                Period Performance\n            </h2>\n            \n            <div style=\"display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 30px;\">\n                \n                <!-- Today -->\n                <div style=\"background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; border-top: 4px solid #0c2340;\">\n                    <h4 style=\"margin: 0; color: #666; font-size: 14px; text-transform: uppercase;\">Today</h4>\n                    <div style=\"font-size: 32px; font-weight: bold; color: #0c2340; margin: 8px 0;\">\n                        ${summaryData.surveys_today || '0'}\n                    </div>\n                    <div style=\"color: #333; font-size: 18px; margin-bottom: 8px;\">\n                        ${formatRating(summaryData.avg_rating_today)} ${starRating(summaryData.avg_rating_today)}\n                    </div>\n                    ${ratingBar(summaryData.avg_rating_today || 0, false)}\n                    <div style=\"margin-top: 8px; font-size: 12px; color: #666;\">\n                        ${trendIndicator(summaryData.avg_rating_today, summaryData.avg_rating_yesterday)}\n                    </div>\n                </div>\n                \n                <!-- This Week -->\n                <div style=\"background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; border-top: 4px solid #0c2340;\">\n                    <h4 style=\"margin: 0; color: #666; font-size: 14px; text-transform: uppercase;\">This Week</h4>\n                    <div style=\"font-size: 32px; font-weight: bold; color: #0c2340; margin: 8px 0;\">\n                        ${summaryData.surveys_wtd || '0'}\n                    </div>\n                    <div style=\"color: #333; font-size: 18px; margin-bottom: 8px;\">\n                        ${formatRating(summaryData.avg_rating_wtd)} ${starRating(summaryData.avg_rating_wtd)}\n                    </div>\n                    ${ratingBar(summaryData.avg_rating_wtd || 0, false)}\n                    <div style=\"margin-top: 8px; font-size: 12px; color: #666;\">\n                        ${formatPercent(summaryData.positive_pct_wtd)} positive\n                    </div>\n                </div>\n                \n                <!-- This Month -->\n                <div style=\"background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; border-top: 4px solid #d84127;\">\n                    <h4 style=\"margin: 0; color: #666; font-size: 14px; text-transform: uppercase;\">This Month</h4>\n                    <div style=\"font-size: 32px; font-weight: bold; color: #0c2340; margin: 8px 0;\">\n                        ${summaryData.surveys_mtd || '0'}\n                    </div>\n                    <div style=\"color: #333; font-size: 18px; margin-bottom: 8px;\">\n                        ${formatRating(summaryData.avg_rating_mtd)} ${starRating(summaryData.avg_rating_mtd)}\n                    </div>\n                    ${ratingBar(summaryData.avg_rating_mtd || 0, false)}\n                    <div style=\"margin-top: 8px; font-size: 12px; color: #666;\">\n                        ${formatPercent(summaryData.positive_pct_mtd)} positive\n                    </div>\n                </div>\n                \n                <!-- Year to Date -->\n                <div style=\"background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; border-top: 4px solid #d84127;\">\n                    <h4 style=\"margin: 0; color: #666; font-size: 14px; text-transform: uppercase;\">Year to Date</h4>\n                    <div style=\"font-size: 32px; font-weight: bold; color: #0c2340; margin: 8px 0;\">\n                        ${formatNumber(summaryData.surveys_ytd || '0')}\n                    </div>\n                    <div style=\"color: #333; font-size: 18px; margin-bottom: 8px;\">\n                        ${formatRating(summaryData.avg_rating_ytd)} ${starRating(summaryData.avg_rating_ytd)}\n                    </div>\n                    ${ratingBar(summaryData.avg_rating_ytd || 0, false)}\n                    <div style=\"margin-top: 8px; font-size: 12px; color: #666;\">\n                        ${formatPercent(summaryData.positive_pct_ytd)} positive\n                    </div>\n                </div>\n                \n            </div>\n            \n            <!-- Day of Week Performance Chart -->\n            <h2 style=\"color: #0c2340; font-size: 24px; margin: 30px 0 20px 0; border-bottom: 2px solid #0c2340; padding-bottom: 10px;\">\n                Performance by Day of Week\n            </h2>\n            \n            <div style=\"background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 30px;\">\n                <div style=\"display: flex; justify-content: space-between; align-items: flex-end;\">\n                    ${dayOfWeekChart()}\n                </div>\n                <div style=\"text-align: center; margin-top: 10px; font-size: 12px; color: #666;\">\n                    Survey Volume & Average Rating by Day\n                </div>\n            </div>\n            \n            <!-- Hourly Pattern Heat Map -->\n            <h2 style=\"color: #0c2340; font-size: 24px; margin: 30px 0 20px 0; border-bottom: 2px solid #0c2340; padding-bottom: 10px;\">\n                Hourly Feedback Pattern\n            </h2>\n            \n            <div style=\"background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 30px;\">\n                <div style=\"text-align: center;\">\n                    ${hourlyHeatMap(hourlyData)}\n                </div>\n                <div style=\"display: flex; justify-content: center; gap: 20px; margin-top: 15px; font-size: 12px;\">\n                    <span><span style=\"display: inline-block; width: 12px; height: 12px; background: #27ae60; border-radius: 2px;\"></span> High Rating</span>\n                    <span><span style=\"display: inline-block; width: 12px; height: 12px; background: #f39c12; border-radius: 2px;\"></span> Medium Rating</span>\n                    <span><span style=\"display: inline-block; width: 12px; height: 12px; background: #d84127; border-radius: 2px;\"></span> Low Rating</span>\n                </div>\n            </div>\n            \n            <!-- Keyword Analysis -->\n            <h2 style=\"color: #0c2340; font-size: 24px; margin: 30px 0 20px 0; border-bottom: 2px solid #0c2340; padding-bottom: 10px;\">\n                Customer Feedback Themes\n            </h2>\n            \n            <div style=\"display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px;\" class=\"stack-mobile\">\n                \n                <!-- Positive Keywords -->\n                <div style=\"background: #e8f5e9; padding: 20px; border-radius: 8px; border-top: 4px solid #27ae60;\">\n                    <h3 style=\"margin: 0 0 15px 0; color: #27ae60; font-size: 18px;\">\n                        😊 What Customers Love\n                    </h3>\n                    <div style=\"line-height: 1.8;\">\n                        ${keywordCloud(keywordsPositive.filter(k => k.period === 'This Week'), '#27ae60')}\n                    </div>\n                </div>\n                \n                <!-- Negative Keywords -->\n                <div style=\"background: #ffebee; padding: 20px; border-radius: 8px; border-top: 4px solid #d84127;\">\n                    <h3 style=\"margin: 0 0 15px 0; color: #d84127; font-size: 18px;\">\n                        😟 Areas for Improvement\n                    </h3>\n                    <div style=\"line-height: 1.8;\">\n                        ${keywordCloud(keywordsNegative.filter(k => k.period === 'This Week'), '#d84127')}\n                    </div>\n                </div>\n                \n            </div>\n            \n            <!-- Location Performance -->\n            <h2 style=\"color: #0c2340; font-size: 24px; margin: 30px 0 20px 0; border-bottom: 2px solid #0c2340; padding-bottom: 10px;\">\n                Location Performance\n            </h2>\n            \n            <div style=\"overflow-x: auto; margin-bottom: 30px;\">\n                <table style=\"width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">\n                    <thead>\n                        <tr style=\"background-color: #0
+
+            <tr style=\"background-color: #0c2340; color: white;\">\n                            <th style=\"padding: 15px; text-align: left; font-weight: 600;\">Location</th>\n                            <th style=\"padding: 15px; text-align: center; font-weight: 600;\">Surveys</th>\n                            <th style=\"padding: 15px; text-align: left; font-weight: 600;\">Rating</th>\n                            <th style=\"padding: 15px; text-align: center; font-weight: 600;\">Response Rate</th>\n                        </tr>\n                    </thead>\n                    <tbody>\n                        ${locationTableHTML}\n                    </tbody>\n                </table>\n            </div>\n            \n            <!-- Team Performance -->\n            <h2 style=\"color: #0c2340; font-size: 24px; margin: 30px 0 20px 0; border-bottom: 2px solid #0c2340; padding-bottom: 10px;\">\n                Response Team Performance\n            </h2>\n            \n            <div style=\"overflow-x: auto; margin-bottom: 30px;\">\n                <table style=\"width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">\n                    <thead>\n                        <tr style=\"background-color: #0c2340; color: white;\">\n                            <th style=\"padding: 15px; text-align: left; font-weight: 600;\">Team Member</th>\n                            <th style=\"padding: 15px; text-align: center; font-weight: 600;\">Responses</th>\n                            <th style=\"padding: 15px; text-align: center; font-weight: 600;\">Avg Time</th>\n                            <th style=\"padding: 15px; text-align: center; font-weight: 600;\">< 1 Hour</th>\n                            <th style=\"padding: 15px; text-align: center; font-weight: 600;\">Result</th>\n                        </tr>\n                    </thead>\n                    <tbody>\n                        ${teamTableHTML}\n                    </tbody>\n                </table>\n            </div>\n            \n            <!-- Recent Negative Feedback -->\n            <h2 style=\"color: #0c2340; font-size: 24px; margin: 30px 0 20px 0; border-bottom: 2px solid #0c2340; padding-bottom: 10px;\">\n                Recent Negative Feedback Requiring Attention\n            </h2>\n            \n            ${negativeFeedbackHTML || '<p style=\"color: #666; text-align: center; padding: 20px;\">No negative feedback in the last 7 days 🎉</p>'}\n            \n            <!-- Weekly Trend -->\n            <h2 style=\"color: #0c2340; font-size: 24px; margin: 30px 0 20px 0; border-bottom: 2px solid #0c2340; padding-bottom: 10px;\">\n                Weekly Performance Trend\n            </h2>\n            \n            <div style=\"overflow-x: auto; margin-bottom: 30px;\">\n                <table style=\"width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden;\">\n                    <thead>\n                        <tr style=\"background-color: #f8f9fa;\">\n                            <th style=\"padding: 12px; text-align: left; font-weight: 600; color: #0c2340;\">Week</th>\n                            <th style=\"padding: 12px; text-align: center; font-weight: 600; color: #0c2340;\">Surveys</th>\n                            <th style=\"padding: 12px; text-align: center; font-weight: 600; color: #0c2340;\">Avg Rating</th>\n                            <th style=\"padding: 12px; text-align: center; font-weight: 600; color: #0c2340;\">NPS</th>\n                            <th style=\"padding: 12px; text-align: center; font-weight: 600; color: #0c2340;\">Response Rate</th>\n                            <th style=\"padding: 12px; text-align: center; font-weight: 600; color: #0c2340;\">Trend</th>\n                        </tr>\n                    </thead>\n                    <tbody>\n                        ${weeklyData.slice(0, 4).map((week, index) => `\n                            <tr style=\"border-bottom: 1px solid #e0e0e0;\">\n                                <td style=\"padding: 12px;\">${week.week_label}</td>\n                                <td style=\"padding: 12px; text-align: center;\">${week.total_surveys}</td>\n                                <td style=\"padding: 12px; text-align: center;\">\n                                    <strong>${formatRating(week.avg_rating)}</strong> ${starRating(week.avg_rating)}\n                                </td>\n                                <td style=\"padding: 12px; text-align: center; font-weight: bold; color: ${week.weekly_nps >= 50 ? '#27ae60' : week.weekly_nps >= 0 ? '#f39c12' : '#d84127'};\">\n                                    ${week.weekly_nps}\n                                </td>\n                                <td style=\"padding: 12px; text-align: center;\">${formatPercent(week.response_rate)}</td>\n                                <td style=\"padding: 12px; text-align: center;\">\n                                    ${week.wow_rating_change ? (week.wow_rating_change > 0 ? '📈' : '📉') : '➡️'}\n                                </td>\n                            </tr>\n                        `).join('')}\n                    </tbody>\n                </table>\n            </div>\n            \n        </div>\n        \n        <!-- Footer -->\n        <div style=\"background-color: #0c2340; color: #ffffff; padding: 25px 20px; text-align: center;\">\n            <p style=\"margin: 0; font-size: 14px; font-weight: 500;\">\n                Ovation Customer Feedback Analytics\n            </p>\n            <p style=\"margin: 8px 0; font-size: 12px; opacity: 0.8;\">\n                <a href=\"https://app.ovationup.com\" style=\"color: #ffffff; text-decoration: underline;\">\n                    View Full Dashboard\n                </a> | \n                <a href=\"mailto:support@ovationup.com\" style=\"color: #ffffff; text-decoration: underline;\">\n                    Contact Support\n                </a>\n            </p>\n            <p style=\"margin: 8px 0 0 0; font-size: 11px; opacity: 0.6;\">\n                Report generated at ${new Date().toLocaleString('en-US', { \n                    timeZone: 'America/Chicago',\n                    dateStyle: 'short',\n                    timeStyle: 'short'\n                })} CST\n            </p>\n            <p style=\"margin: 4px 0 0 0; font-size: 10px; opacity: 0.5;\">\n                ${executiveData.active_locations || locationData.length} Active Locations | \n                ${executiveData.unique_customers || summaryData.unique_customers || '0'} Unique Customers This Month\n            </p>\n        </div>\n        \n    </div>\n</body>\n</html>`;\n\n// Determine email priority and subject line\nconst priority = alerts.filter(a => a.type === 'critical').length > 0 ? 'high' : 'normal';\nconst subjectPrefix = alerts.filter(a => a.type === 'critical').length > 0 ? '🚨 URGENT: ' : '';\nconst todayRating = summaryData.avg_rating_today ? ` | Today: ${formatRating(summaryData.avg_rating_today)}⭐` : '';\n\nreturn {\n  html: emailHTML,\n  subject: `${subjectPrefix}Great Harvest Crown Point - Daily Feedback Report${todayRating}`,\n  priority: priority,\n  alerts: alerts,\n  metrics: {\n    nps: executiveData.nps_score || summaryData.nps_score || 0,\n    todayRating: summaryData.avg_rating_today || 0,\n    responseRate: summaryData.negative_response_rate || 100,\n    surveysToday: summaryData.surveys_today || 0\n  }\n};"
+     
+    },
+     "id": "function-email",
+     "name": "Generate Email HTML",
+     "type": "n8n-nodes-base.code",
+     "typeVersion": 2,
+     "position": [1050, 300]
+   },
+   {
+     "parameters": {
+       "fromEmail": "noreply@greatharvest.com",
+       "toEmail": "management@greatharvestcrownpoint.com",
+       "subject": "={{$json.subject}}",
+       "emailType": "html",
+       "htmlBody": "={{$json.html}}",
+       "options": {
+         "appendAttribution": false,
+         "priority": "={{$json.priority}}"
+       }
+     },
+     "id": "email-send",
+     "name": "Send Email",
+     "type": "n8n-nodes-base.emailSend",
+     "typeVersion": 2.1,
+     "position": [1250, 300],
+     "credentials": {
+       "smtp": {
+         "id": "2",
+         "name": "SMTP"
+       }
+     }
+   },
+   {
+     "parameters": {
+       "conditions": {
+         "options": {
+           "caseSensitive": false,
+           "leftValue": "",
+           "typeValidation": "loose"
+         },
+         "conditions": [
+           {
+             "id": "critical-check",
+             "leftValue": "={{ $json.alerts.filter(a => a.type === 'critical').length }}",
+             "rightValue": 0,
+             "operator": {
+               "type": "number",
+               "operation": "gt"
+             }
+           }
+         ],
+         "combinator": "or"
+       },
+       "options": {}
+     },
+     "id": "if-critical",
+     "name": "Check for Critical Alerts",
+     "type": "n8n-nodes-base.if",
+     "typeVersion": 2,
+     "position": [1250, 450]
+   },
+   {
+     "parameters": {
+       "authentication": "webhook",
+       "url": "YOUR_SLACK_WEBHOOK_URL",
+       "options": {
+         "bodyContentType": "json"
+       },
+       "sendBody": true,
+       "specifyBody": "json",
+       "jsonBody": "={\n  \"text\": \"🚨 Critical Alert: Great Harvest Crown Point\",\n  \"attachments\": [\n    {\n      \"color\": \"danger\",\n      \"fields\": [\n        {\n          \"title\": \"Alert Type\",\n          \"value\": \"{{ $json.alerts[0].message }}\",\n          \"short\": false\n        },\n        {\n          \"title\": \"Today's Rating\",\n          \"value\": \"{{ $json.metrics.todayRating }} ⭐\",\n          \"short\": true\n        },\n        {\n          \"title\": \"Response Rate\",\n          \"value\": \"{{ $json.metrics.responseRate }}%\",\n          \"short\": true\n        }\n      ],\n      \"footer\": \"Ovation Feedback System\",\n      \"ts\": \"{{ Math.floor(Date.now() / 1000) }}\"\n    }\n  ]\n}"
+     },
+     "id": "slack-alert",
+     "name": "Send Slack Alert",
+     "type": "n8n-nodes-base.httpRequest",
+     "typeVersion": 4.1,
+     "position": [1450, 450]
+   }
+ ],
+ "connections": {
+   "Daily 7AM Trigger": {
+     "main": [
+       [
+         {
+           "node": "Query1_Summary",
+           "type": "main",
+           "index": 0
+         },
+         {
+           "node": "Query2_Keywords_Positive",
+           "type": "main",
+           "index": 0
+         },
+         {
+           "node": "Query3_Keywords_Negative",
+           "type": "main",
+           "index": 0
+         },
+         {
+           "node": "Query4_Locations",
+           "type": "main",
+           "index": 0
+         },
+         {
+           "node": "Query5_Negative",
+           "type": "main",
+           "index": 0
+         },
+         {
+           "node": "Query6_Team",
+           "type": "main",
+           "index": 0
+         },
+         {
+           "node": "Query7_Trends",
+           "type": "main",
+           "index": 0
+         },
+         {
+           "node": "Query8_Executive",
+           "type": "main",
+           "index": 0
+         },
+         {
+           "node": "Query10_Hourly",
+           "type": "main",
+           "index": 0
+         },
+         {
+           "node": "Query11_Weekly",
+           "type": "main",
+           "index": 0
+         },
+         {
+           "node": "Query12_DayOfWeek",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Query1_Summary": {
+     "main": [
+       [
+         {
+           "node": "Generate Email HTML",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Query2_Keywords_Positive": {
+     "main": [
+       [
+         {
+           "node": "Generate Email HTML",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Query3_Keywords_Negative": {
+     "main": [
+       [
+         {
+           "node": "Generate Email HTML",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Query4_Locations": {
+     "main": [
+       [
+         {
+           "node": "Generate Email HTML",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Query5_Negative": {
+     "main": [
+       [
+         {
+           "node": "Generate Email HTML",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Query6_Team": {
+     "main": [
+       [
+         {
+           "node": "Generate Email HTML",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Query7_Trends": {
+     "main": [
+       [
+         {
+           "node": "Generate Email HTML",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Query8_Executive": {
+     "main": [
+       [
+         {
+           "node": "Generate Email HTML",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Query10_Hourly": {
+     "main": [
+       [
+         {
+           "node": "Generate Email HTML",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Query11_Weekly": {
+     "main": [
+       [
+         {
+           "node": "Generate Email HTML",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Query12_DayOfWeek": {
+     "main": [
+       [
+         {
+           "node": "Generate Email HTML",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Generate Email HTML": {
+     "main": [
+       [
+         {
+           "node": "Send Email",
+           "type": "main",
+           "index": 0
+         },
+         {
+           "node": "Check for Critical Alerts",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   },
+   "Check for Critical Alerts": {
+     "main": [
+       [
+         {
+           "node": "Send Slack Alert",
+           "type": "main",
+           "index": 0
+         }
+       ]
+     ]
+   }
+ },
+ "settings": {
+   "executionOrder": "v1"
+ },
+ "staticData": null,
+ "meta": {
+   "templateCredsSetupCompleted": true,
+   "instanceId": "great-harvest-crown-point"
+ },
+ "pinData": {},
+ "versionId": "1.0.0",
+ "triggerCount": 1,
+ "tags": []
+}
