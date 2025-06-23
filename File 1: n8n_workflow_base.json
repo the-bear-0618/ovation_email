@@ -1,0 +1,40 @@
+{
+  "name": "Great Harvest Crown Point - Daily Analytics Email",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 7
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 7AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SET timezone = 'America/Chicago';\n\n-- Query 1: Main Analytics Dashboard\nWITH date_ranges AS (\n    SELECT \n        CURRENT_DATE AT TIME ZONE 'America/Chicago' as today,\n        DATE_TRUNC('week', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date as week_start,\n        DATE_TRUNC('month', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date as month_start,\n        DATE_TRUNC('year', CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date as year_start,\n        (CURRENT_DATE AT TIME ZONE 'America/Chicago') - INTERVAL '1 day' as yesterday\n),\nrating_metrics AS (\n    SELECT\n        COUNT(CASE WHEN DATE(created_at AT TIME ZONE 'America/Chicago') = (SELECT today FROM date_ranges) THEN 1 END) as surveys_today,\n        AVG(CASE WHEN DATE(created_at AT TIME ZONE 'America/Chicago') = (SELECT today FROM date_ranges) THEN rating END) as avg_rating_today,\n        COUNT(CASE WHEN DATE(created_at AT TIME ZONE 'America/Chicago') = (SELECT today FROM date_ranges) AND rating <= 2 THEN 1 END) as negative_today,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT week_start FROM date_ranges) THEN 1 END) as surveys_wtd,\n        AVG(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT week_start FROM date_ranges) THEN rating END) as avg_rating_wtd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT week_start FROM date_ranges) AND rating >= 4 THEN 1 END) as positive_wtd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT month_start FROM date_ranges) THEN 1 END) as surveys_mtd,\n        AVG(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT month_start FROM date_ranges) THEN rating END) as avg_rating_mtd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT month_start FROM date_ranges) AND rating >= 4 THEN 1 END) as positive_mtd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT year_start FROM date_ranges) THEN 1 END) as surveys_ytd,\n        AVG(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT year_start FROM date_ranges) THEN rating END) as avg_rating_ytd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT year_start FROM date_ranges) AND rating >= 4 THEN 1 END) as positive_ytd,\n        AVG(CASE WHEN DATE(created_at AT TIME ZONE 'America/Chicago') = (SELECT yesterday FROM date_ranges) THEN rating END) as avg_rating_yesterday,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT week_start FROM date_ranges) AND rating <= 2 AND has_response = true THEN 1 END) as negative_responded_wtd,\n        COUNT(CASE WHEN (created_at AT TIME ZONE 'America/Chicago')::date >= (SELECT week_start FROM date_ranges) AND rating <= 2 THEN 1 END) as negative_total_wtd\n    FROM surveys\n    WHERE rating IS NOT NULL\n)\nSELECT \n    surveys_today,\n    ROUND(avg_rating_today::numeric, 2) as avg_rating_today,\n    negative_today,\n    surveys_wtd,\n    ROUND(avg_rating_wtd::numeric, 2) as avg_rating_wtd,\n    ROUND(100.0 * positive_wtd / NULLIF(surveys_wtd, 0), 1) as positive_pct_wtd,\n    surveys_mtd,\n    ROUND(avg_rating_mtd::numeric, 2) as avg_rating_mtd,\n    ROUND(100.0 * positive_mtd / NULLIF(surveys_mtd, 0), 1) as positive_pct_mtd,\n    surveys_ytd,\n    ROUND(avg_rating_ytd::numeric, 2) as avg_rating_ytd,\n    ROUND(100.0 * positive_ytd / NULLIF(surveys_ytd, 0), 1) as positive_pct_ytd,\n    ROUND(avg_rating_yesterday::numeric, 2) as avg_rating_yesterday,\n    ROUND(100.0 * negative_responded_wtd / NULLIF(negative_total_wtd, 0), 1) as negative_response_rate\nFROM rating_metrics;",
+        "options": {}
+      },
+      "id": "postgres-summary",
+      "name": "Query1_Summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [450, 100],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Supabase"
+        }
+      }
+    }
+  ]
+}
